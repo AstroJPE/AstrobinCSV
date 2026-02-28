@@ -32,6 +32,7 @@ ehthumbs.db
 Desktop.ini
 
 # ── Deployment / distribution artifacts ──────────────────────────────────────
+bundle_for_windows.zsh
 Deploy.txt
 *.dmg
 *.zip
