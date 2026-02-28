@@ -49,7 +49,7 @@ Pre-built binaries are available in the
 [Releases](../../releases) section of this repository:
 
 - **macOS** — download the `.dmg` file; requires macOS 15 (Sequoia) or later
-- **Windows** — download the `.zip` file; requires Windows 10 or later
+- **Windows** — download the `.zip` file; requires Windows 10 or later; unzip and double click the AstrobinCSV.exe file in the directory that unzip created.
 
 ---
 
