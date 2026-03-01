@@ -130,13 +130,17 @@ The combined frames are then split into rows according to the selected
 - **One row per date** — all frames from the same target, filter, and
   observing date are combined into one row. The number of frames →
   **number** column. Gain and sensor temperature are taken from the first
-  resolved frame.
+  resolved frame. The flat, dark, and bias counts are taken from the first
+  group in the combined set (these counts are attached to the group as a
+  whole in Step 4, not per-frame).
 - **One row per date + gain + temp** — same as above but frames are also
   separated by gain and sensor cooling temperature, so a night where the gain
-  was changed mid-session would produce two rows.
+  was changed mid-session would produce two rows. Flat, dark, and bias counts
+  are again taken from the first group in the combined set.
 - **Collapsed** — all frames for the same target and filter are combined into
   a single row regardless of date, with the earliest date shown and the total
-  frame count.
+  frame count. Flat, dark, and bias counts are taken from the first group in
+  the combined set.
 
 ---
 
