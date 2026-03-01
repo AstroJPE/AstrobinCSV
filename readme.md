@@ -43,6 +43,13 @@ log files into acquisition CSV files suitable for uploading to
 
 ---
 
+## How it works
+
+For a detailed description of how the app processes log files and produces
+each column, see [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
+
+---
+
 ## Requirements
 
 Pre-built binaries are available in the
