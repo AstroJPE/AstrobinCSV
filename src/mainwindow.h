@@ -6,11 +6,13 @@
 #include <QList>
 #include <QSortFilterProxyModel>
 #include <QAtomicInt>
+#include <QHash>
 #include "acquisitiontableview.h"
 #include "logparser/calibrationlogparser.h"
 #include "xisfmasterframereader.h"
-#include "models/acquisitiongroup.h"
+#include "models/integrationgroup.h"
 #include "models/acquisitionrow.h"
+#include "masterfilecache.h"
 #include "debuglogger.h"
 #include "dialogs/debugresultdialog.h"
 
@@ -46,19 +48,17 @@ private slots:
     void onToggleDebugLogging();
 
 private:
-    void changeFontSize(int delta, bool save = true);  // delta in points; 0 = reset to system default
+    void changeFontSize(int delta, bool save = true);
 
     void buildMenu();
     void buildToolBar();
     void buildCentralWidget();
     void applyTheme(const QString &theme);
-
-    void loadLogFile(const QString &path);
     void checkForOldDebugLogs();
-    void resolveXisfHeaders(QList<AcquisitionGroup> &newGroups);
-    void resolveAmbientTemperatures(QList<AcquisitionGroup> &newGroups);
-    void resolveCalibrationBlocks(QList<AcquisitionGroup> &groups,
-                                  const QStringList &logFiles);
+
+    // Log loading pipeline.
+    void resolveFrames(QList<IntegrationGroup> &newGroups,
+                       const QStringList       &allLogFiles);
     QString promptForDirectory(const QString &missingPath,
                                const QString &startDir,
                                const QString &errorMessage = {});
@@ -67,31 +67,30 @@ private:
                                      const QString &errorMessage = {});
     void rebuildRows();
     void updateStatusBar();
-
     QStringList knownLogTargets() const;
 
     enum GroupingStrategy { ByDate = 0, ByDateGainTemp = 1, Collapsed = 2 };
-    QList<AcquisitionRow> applyGrouping(
-        const QList<const AcquisitionGroup *> &groups,
-        const QString &target,
-        GroupingStrategy strategy) const;
+    QList<AcquisitionRow> buildRows(
+        const QList<const IntegrationGroup *> &groups,
+        const QString                         &astrobinTarget,
+        GroupingStrategy                       strategy) const;
     void applyLocationToRows(QList<AcquisitionRow> &rows) const;
 
-    QList<AcquisitionGroup> m_groups;
+    // Data.
+    QList<IntegrationGroup> m_groups;
 
-    // Calibration master file directory caches — persist across Add Log calls
-    // for the lifetime of the app session so the user only needs to locate a
-    // missing master directory once.
-    // primaryMasterCache  : exact directories where a master file was found;
-    //                       checked with QFile::exists() before any search.
-    // secondaryMasterCache: user-supplied directories searched recursively.
-    QSet<QString>  m_primaryMasterCache;
-    QList<QString> m_secondaryMasterCache;
-    // already been shown. Fires once per unique group label + grouping
-    // strategy combination, so switching strategies re-shows the warning
-    // for the new row arrangement but repeated Manage*/location changes do not.
+    // Master file directory cache — persists across Add Log... calls.
+    MasterFileCache         m_masterCache;
+
+    // "groupLabel|strategy" keys for which the calibration conflict warning
+    // has already been shown.
+    QSet<QString>           m_calConflictWarnedKeys;
+
+    // "groupLabel|strategy" keys for which the partial-AMBTEMP warning
+    // has already been shown.
     QSet<QString>           m_ambTempWarnedKeys;
 
+    // Widgets.
     CsvTableModel         *m_model{nullptr};
     QSortFilterProxyModel *m_proxyModel{nullptr};
     AcquisitionTableView  *m_tableView{nullptr};

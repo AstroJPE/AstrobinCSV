@@ -6,141 +6,233 @@ table.
 
 ---
 
-## Step 1 — Parse the WBPP Log File
+## Step 1 — Parse the WBPP Log File (`PixInsightLogParser`)
 
 The app opens the WBPP `.log` file and scans it line by line looking for
 `* Begin integration of Light frames` or `* Begin fast integration of Light frames`
-markers. Each such marker starts a new integration block. For each block the
-parser reads:
+markers. Each such marker starts a new integration block. Blocks whose output
+master file begins with `LN_Reference_` are silently skipped — these are Local
+Normalization reference integrations, not light frame integration.
 
-- **Filter** — from the `Filter :` line (e.g. `Filter : H`)
+For each accepted block the parser reads:
+
+- **Filter** — from the `Filter :` line (e.g. `Filter : H`). Stored on each
+  frame; may be overridden by the `FILTER` FITS keyword in Step 2.
 - **Exposure** — from the `Exposure :` line (e.g. `Exposure : 300.00s`)
-  → produces the **duration** column
-- **Binning** — from the `BINNING :` line → produces the **binning** column
+  → produces the **duration** column.
 - **Target name** — from the `Keywords : [...]` line, by searching for any
-  keyword listed in the user's Target Keywords list (e.g. `OBJECT`, `TARGET`).
-  If the Target Keywords list is empty, this is skipped and the target name
-  will come from the XISF headers in Step 2 instead.
-- **List of registered `.xisf` files** — from the `II.images` or `FI.targets`
-  array in the block. Each entry is a full path to a registered `.xisf` frame.
-  These paths are stored as a list on the group.
+  keyword listed in the user's Target Keywords list (e.g. `TARGET`, `OBJECT`).
+  If a match is found, `targetFromLog` is set to true and the value is stored
+  as `logTarget` on both the group and each frame. If the Target Keywords list
+  is empty, this step is skipped entirely and the target name comes from the
+  XISF `OBJECT` header keyword in Step 2.
+- **List of registered `.xisf` file paths** — from the `II.images` or
+  `FI.targets` array in the block. Each entry is the full path to a
+  registered `.xisf` frame produced by WBPP's registration step.
 
-Each integration block becomes one internal `AcquisitionGroup` object. A
-three-night session with three filters produces nine `AcquisitionGroup` objects
-(one per night per filter).
-
----
-
-## Step 2 — Read XISF Headers
-
-For each `AcquisitionGroup`, the app iterates over every registered `.xisf`
-file path collected in Step 1. For each file it reads only the XML header
-block — the first 16 bytes give the header length, and only that many bytes
-are read. The pixel data that makes up the bulk of the file is never touched.
-From the XML header it extracts the following FITS keywords:
-
-- **`DATE-LOC`** — the local date and time the frame was captured. Twelve
-  hours are subtracted so that frames taken after midnight are attributed to
-  the previous calendar date (the observing night they belong to). The
-  resulting date → produces the **date** column
-- **`GAIN`** — the camera gain → produces the **gain** column
-- **`SET-TEMP`** — the camera sensor set temperature → produces the
-  **sensorCooling** column
-- **`FILTER`** — the filter name from the camera's acquisition software. If
-  present, this overrides the filter name read from the log in Step 1
-- **`OBJECT`** — the target name from the camera's acquisition software. If
-  present, and if no Target Keyword match was found in Step 1, this overrides
-  the target name
-- **`AMBTEMP`** — the ambient (outside) temperature → produces the
-  **temperature** column (averaged across all frames in the group for the
-  same date)
-
-If a registered `.xisf` file cannot be found at its original path (common
-when the log was created on a different machine), the app searches for it
-automatically in the `../registered/` directory relative to the log file. If
-still not found, the user is prompted to locate the directory.
-
-All per-frame values (date, gain, sensor temperature, ambient temperature) are
-stored in per-frame lists on the `AcquisitionGroup`.
+Each accepted integration block becomes one `IntegrationGroup` object, which
+carries the group-level fields (`exposureSec`, `logTarget`, `targetFromLog`,
+`sourceLogFile`, `sessionIndex`) plus a list of `AcquisitionFrame` objects —
+one per registered `.xisf` path.
 
 ---
 
-## Step 3 — Parse Calibration Blocks
+## Step 2 — Resolve XISF Headers (`FrameResolveWorker`, stage 1)
 
-The app re-reads the same WBPP log file(s) looking for two types of blocks:
+Frame resolution runs on a background thread. For each `AcquisitionFrame` in
+each `IntegrationGroup`, the worker attempts to read the frame's XISF header.
+Only the XML header block is read — the first 16 bytes give the header length,
+and only that many bytes are fetched. The pixel data is never touched.
+
+From the XML header the following FITS keywords are extracted:
+
+- **`DATE-LOC`** — local capture date/time. Twelve hours are subtracted so
+  that frames taken after midnight are attributed to the previous calendar
+  date (the observing night). → produces the **date** column.
+- **`GAIN`** — camera gain → produces the **gain** column.
+- **`SET-TEMP`** — sensor set temperature → produces the **sensorCooling**
+  column.
+- **`FILTER`** — filter name from the acquisition software. If present,
+  overrides the filter name read from the log in Step 1.
+- **`OBJECT`** — target name from the acquisition software. Stored on the
+  frame; used as `logTarget` if no Target Keyword match was found in Step 1
+  (i.e. `targetFromLog` is false).
+- **`AMBTEMP`** — ambient temperature → contributes to the **temperature**
+  column (averaged across all frames sharing the same row in Step 5).
+- **`XBINNING`** — horizontal binning factor → produces the **binning**
+  column.
+
+### File location strategy
+
+If a registered `.xisf` file is not found at its original path (common when
+the log was produced on a different machine), the worker searches using a
+tiered fallback strategy:
+
+1. **Primary cache** — exact directories where a registered frame was
+   previously found in this session.
+2. **Secondary cache** — user-supplied directories searched recursively (up to
+   four levels deep).
+3. **Auto-probe** — the `../registered/` directory relative to the log file,
+   searched recursively.
+4. **User prompt** — if all automatic methods fail, the worker pauses and
+   signals the main thread to display a directory picker. The chosen directory
+   is added to the secondary cache for subsequent frames.
+
+If the user cancels a prompt, further prompts for registered frames are
+suppressed for the remainder of the current import.
+
+---
+
+## Step 3 — Parse Calibration Blocks (`CalibrationLogParser`)
+
+While the background worker resolves XISF headers, the main thread also
+re-reads the same WBPP log file(s) looking for two types of calibration
+blocks.
 
 ### Light calibration blocks (`* Begin calibration of Light frames`)
 
-Each block records which master calibration files were used to calibrate that
-group of light frames:
+Each block records which master calibration files were applied to a group of
+light frames:
 
-- `IC.masterDarkPath` — path to the master dark
-- `IC.masterFlatPath` — path to the master flat
-- `IC.masterBiasPath` — path to the master bias (if used directly)
+- `IC.masterDarkEnabled` / `IC.masterDarkPath` — the master dark, if enabled.
+- `IC.masterFlatEnabled` / `IC.masterFlatPath` — the master flat, if enabled.
+- `IC.masterBiasPath` / `Master bias:` — the master bias path (when used
+  directly to calibrate lights).
 
-It also collects the `Calibration frame N: input ---> output_c.xisf` summary
-lines that appear after the block ends. These `_c.xisf` output filenames are
-the key that links a calibrated frame back to its calibration block.
+The `Calibration frame N: input ---> output_c.xisf` summary lines that appear
+after the block's `End` marker are also collected. These `_c.xisf` output
+filenames are the key that links each calibrated frame back to its calibration
+block.
 
-### Flat calibration + integration block pairs (`* Begin calibration of Flat frames` / `* Begin integration of Flat frames`)
+### Flat calibration + integration block pairs
 
-Each pair records which master bias was used to calibrate the flat frames, and
-what master flat file was produced. This builds a map of
-`master flat path → master bias path`, which is needed because the light
-calibration block does not always record the bias directly — when
-`IC.masterBiasEnabled = false` the bias was used only to calibrate the flats,
-not the lights directly.
+Each `* Begin calibration of Flat frames` / `* Begin integration of Flat frames`
+pair records:
 
----
+- Which master bias was used to calibrate the flat frames.
+- Which master flat file was produced by the subsequent integration.
 
-## Step 4 — Match Calibration Blocks to Groups and Read Frame Counts
+This builds a `flatToBias` map of `master flat path → master bias path`. This
+map is needed because when `IC.masterBiasEnabled = false` in the light
+calibration block, the bias was used only to calibrate the flats — not the
+lights directly — and the light block does not record it.
 
-For each `AcquisitionGroup`, the app takes the registered `.xisf` filenames
-from Step 1, strips any `_r` suffix and adds `_c` to derive the expected
-calibrated output filename (e.g. `frame_r.xisf` → `frame_c.xisf`). It then
-looks up that filename in the index of calibrated output paths collected in
-Step 3 to find which calibration block was used for this group.
+### External flat detection
 
-Once the matching calibration block is found, the app physically opens each
-master `.xisf` file and reads its XML header to extract the frame count from
-the processing history. The count is stored as follows:
-
-- The master flat frame count → produces the **flats** column
-- The master dark frame count → produces the **darks** column
-- The master bias frame count (looked up via the flat → bias map from Step 3,
-  or directly from the calibration block) → produces the **bias** column
-
-If a master file cannot be found at its original path (again common across
-machines), the app searches the `../master/` directory relative to the log
-file, then any previously located master directories, and finally prompts the
-user to locate the directory.
+After all log files are parsed, the app checks whether any master flat path
+referenced in a light calibration block was produced in a *different* WBPP
+session (i.e. not found in the `flatToBias` map). If such external flats are
+detected, the user is informed that the bias count for those rows cannot be
+determined automatically and will be left blank. Loading the session log that
+produced those master flats resolves this.
 
 ---
 
-## Step 5 — Combine Groups and Apply Grouping Strategy
+## Step 4 — Resolve Calibration Chains (`FrameResolveWorker`, stage 2)
 
-All `AcquisitionGroup` objects from all loaded log files are combined. Groups
-with the same target name and filter are merged together into a combined set.
-Within each combined set, duplicate frames (the same filename appearing in
-multiple groups) are removed.
+After successfully reading a frame's XISF header (Step 2), the worker
+resolves the frame's calibration chain:
 
-The combined frames are then split into rows according to the selected
+1. The registered `.xisf` filename is inspected for a `_c` suffix (e.g.
+   `frame_r_c.xisf`). This calibrated basename is looked up in the index of
+   `_c.xisf` output paths built in Step 3 to identify the matching
+   `CalibrationBlock`.
+
+2. The master dark, flat, and bias paths from the matching block are stored on
+   the frame's `FrameCalibration` record.
+
+3. Each master `.xisf` file is physically opened and its XML header is
+   scanned to extract the integrated frame count. Three formats are recognised:
+   - `<table id="images" rows="N">` in the XML header (current PixInsight).
+   - Entity-encoded equivalent (`&lt;table … rows=&quot;N&quot;`) stored in
+     a `PixInsight:ProcessingHistory` property attribute.
+   - `ImageIntegration.numberOfImages: N` in a FITS `HISTORY` keyword comment
+     (older PixInsight versions).
+
+   The counts are stored as:
+   - Master flat frame count → **flats** column.
+   - Master dark frame count → **darks** column.
+   - Master bias frame count (via `flatToBias` chain first, then directly from
+     the calibration block) → **bias** column.
+
+### Master file location strategy
+
+As with registered frames, a tiered fallback is used if a master file is not
+at its original path:
+
+1. **Primary cache** — previously located master directories (persists across
+   multiple Add Log calls within the same app session).
+2. **`../master/` sibling** — the `master` directory adjacent to the log
+   file's parent, searched recursively.
+3. **Primary cache (recursive)** — exact directories from past finds.
+4. **Secondary cache (recursive)** — user-supplied directories.
+5. **User prompt** — directory picker pauses the worker; the chosen directory
+   is added to the secondary cache. Cancelling suppresses further master
+   prompts for the remainder of the current import.
+
+### Back-filling calibration data from supplementary logs
+
+After the worker finishes, the main thread performs a back-fill pass over all
+previously loaded `IntegrationGroup` objects (i.e. those loaded in earlier
+Add Log calls). For any resolved frame that still has missing calibration
+counts (`darks`, `flats`, or `bias` < 0), the app looks up its calibrated
+basename in the newly-built `basenameToBlock` index. If a match is found, the
+missing counts are resolved using the same tiered master-file lookup logic,
+with most reads served from the in-memory cache with no further I/O. This
+allows loading a supplementary log from a different WBPP session to
+retroactively populate calibration data for frames that were imported earlier.
+
+---
+
+## Step 5 — Combine Groups and Apply Grouping Strategy (`rebuildRows`)
+
+`rebuildRows` is called after every import, and also whenever the user changes
+the row grouping, location, filter mappings, or target configuration. It
+rebuilds the entire table from the in-memory `m_groups` list.
+
+### Target name resolution
+
+For each `IntegrationGroup`, the display target name is determined as follows:
+
+1. If `logTarget` is set on the group (from a Target Keyword match in Step 1),
+   it is used directly.
+2. Otherwise, the most frequently occurring `logTarget` value across the
+   group's resolved frames (from `OBJECT` headers) is used.
+3. If still empty, the log filename's base name is used as a fallback.
+
+The raw log target is then mapped through the user's Target Groups
+configuration (`AppSettings::astrobinTargetName`) to produce the final
+Astrobin target name used for grouping and display.
+
+### Merging groups by target and filter
+
+Groups with the same Astrobin target name and filter are combined into a
+shared frame pool. Duplicate frames (the same filename appearing in multiple
+groups, which can occur when multiple log files reference the same registered
+frames) are removed by filename.
+
+### Row bucketing
+
+The combined frame pool is split into rows according to the selected
 **Row Grouping** strategy:
 
-- **One row per date** — all frames from the same target, filter, and
-  observing date are combined into one row. The number of frames →
-  **number** column. Gain and sensor temperature are taken from the first
-  resolved frame. The flat, dark, and bias counts are taken from the first
-  group in the combined set (these counts are attached to the group as a
-  whole in Step 4, not per-frame).
-- **One row per date + gain + temp** — same as above but frames are also
-  separated by gain and sensor cooling temperature, so a night where the gain
-  was changed mid-session would produce two rows. Flat, dark, and bias counts
-  are again taken from the first group in the combined set.
+- **One row per date** — frames are bucketed by observing date only. Gain and
+  sensor temperature differences within the same date are ignored.
+- **One row per date + gain + temp** — frames are bucketed by date, gain, and
+  sensor set temperature. A night where the gain or cooling target changed
+  mid-session produces separate rows.
 - **Collapsed** — all frames for the same target and filter are combined into
-  a single row regardless of date, with the earliest date shown and the total
-  frame count. Flat, dark, and bias counts are taken from the first group in
-  the combined set.
+  one row regardless of date. The earliest date is shown; frame counts and
+  temperatures are summed/averaged across all buckets.
+
+For each row, calibration counts (`darks`, `flats`, `bias`) are taken from
+the first resolved frame in the bucket. If frames within the same bucket have
+differing calibration counts, a one-time warning is shown (keyed by group
+label and strategy so it is not repeated on subsequent rebuilds).
+
+The ambient temperature for each row is the mean `AMBTEMP` across all resolved
+frames in that bucket that carry the keyword. If only some frames have
+`AMBTEMP`, a one-time warning is shown.
 
 ---
 
@@ -150,16 +242,42 @@ After the rows are built:
 
 - **filter** column — the AstroBin numeric filter ID is looked up from the
   filter name (from the XISF `FILTER` keyword or the log `Filter :` line)
-  using the mappings configured in Manage Filters
+  using the mappings configured in Manage Filters. Unmapped filters are
+  highlighted in amber in the table.
 - **filterName** column — the human-readable AstroBin filter name from the
-  same mapping (display only — not exported to CSV)
+  same mapping (display only — not exported to CSV).
 - **bortle** and **meanSqm** columns — applied from the selected Location
-  configured in Manage Locations
-- **temperature** column — the average of all `AMBTEMP` values from the
-  resolved frames that belong to this row's date group
-- **Group** column — a label constructed as `"Target / Filter / Date"`
-  (display only — not exported to CSV)
+  configured in Manage Locations.
+- **temperature** column — the mean of all `AMBTEMP` values from the resolved
+  frames that belong to this row's bucket.
+- **Group** column — a label constructed as `"Target / Filter"` (Collapsed)
+  or `"Target / Filter / Date"` (per-date strategies). Display only — not
+  exported to CSV.
 
 The **iso**, **fNumber**, **flatDarks**, and **meanFwhm** columns are not
 populated automatically — they are available for the user to fill in manually
-by double-clicking the cell in the table.
+by double-clicking a cell in the table.
+
+User edits to any cell are preserved across rebuilds. Before each rebuild a
+snapshot of all currently set field values is taken (keyed by group label);
+after the new rows are computed the snapshot is re-applied, so manual edits
+survive grouping strategy changes, log additions/removals, and settings
+changes. The filter ID column is intentionally excluded from the snapshot so
+that a newly configured filter mapping is always reflected immediately.
+
+---
+
+## Debug Logging
+
+An optional structured debug log can be enabled via **Tools → Enable Debug
+Logging** before importing a log file. When active, two files are written to
+the platform's application data directory:
+
+- `AstrobinCSV_debug_<timestamp>.log` — human-readable record of every regex
+  match attempt, file open, decision, and key/value result produced during
+  parsing and frame resolution.
+- `AstrobinCSV_debug_<timestamp>.json` — machine-readable equivalent for
+  automated analysis.
+
+At startup, if debug log files from a previous session are found, the app
+offers to delete them.

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
-project(AstrobinCSV VERSION 1.0.0 LANGUAGES CXX)
-set(CMAKE_OSX_ARCHITECTURES arm64;x86_64)
+project(AstrobinCSV VERSION 2.0.0 LANGUAGES CXX)
+set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,7 +30,7 @@ set(SOURCES
     src/dialogs/copycsv.cpp
     src/filterwebscraper.cpp
     src/settings/appsettings.cpp
-    src/xisfresolveworker.cpp
+    src/frameresolverworker.cpp
     src/logparser/calibrationlogparser.cpp
     src/xisfmasterframereader.cpp
     src/debuglogger.cpp
@@ -44,9 +44,11 @@ set(HEADERS
     src/logparser/logparserbase.h
     src/logparser/pixinsightlogparser.h
     src/logparser/sirillogparser.h
-    src/models/acquisitiongroup.h
+    src/models/acquisitionframe.h
     src/models/acquisitionrow.h
     src/models/csvtablemodel.h
+    src/models/framecalibration.h
+    src/models/integrationgroup.h
     src/models/targetgroup.h
     src/dialogs/managelocations.h
     src/dialogs/managefilters.h
@@ -55,9 +57,10 @@ set(HEADERS
     src/dialogs/copycsv.h
     src/filterwebscraper.h
     src/settings/appsettings.h
-    src/xisfresolveworker.h
+    src/frameresolverworker.h
     src/logparser/calibrationlogparser.h
     src/xisfmasterframereader.h
+    src/masterfilecache.h
     src/debuglogger.h
     src/dialogs/debugresultdialog.h
 )

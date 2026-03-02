@@ -46,23 +46,24 @@ std::optional<XisfFrameData> XisfHeaderReader::read(const QString &path)
     if (static_cast<quint32>(xmlData.size()) < xmlLen)
         return std::nullopt;
 
-    // Keywords we look for — logged once per file so the reader is
-    // self-documenting in the debug output.
-    static const QString kDateLoc   = QStringLiteral("DATE-LOC");
-    static const QString kGain      = QStringLiteral("GAIN");
-    static const QString kSetTemp   = QStringLiteral("SET-TEMP");
-    static const QString kFilter    = QStringLiteral("FILTER");
-    static const QString kObject    = QStringLiteral("OBJECT");
-    static const QString kAmbTemp   = QStringLiteral("AMBTEMP");
+    static const QString kDateLoc  = QStringLiteral("DATE-LOC");
+    static const QString kGain     = QStringLiteral("GAIN");
+    static const QString kSetTemp  = QStringLiteral("SET-TEMP");
+    static const QString kFilter   = QStringLiteral("FILTER");
+    static const QString kObject   = QStringLiteral("OBJECT");
+    static const QString kAmbTemp  = QStringLiteral("AMBTEMP");
+    static const QString kXBinning = QStringLiteral("XBINNING");
 
     if (logging)
         dbg.logDecision(
             QStringLiteral("XISF '%1': scanning for keywords [%2]")
                 .arg(QFileInfo(path).fileName(),
                      QStringList{kDateLoc, kGain, kSetTemp,
-                                 kFilter, kObject, kAmbTemp}.join(", ")));
+                                 kFilter, kObject, kAmbTemp,
+                                 kXBinning}.join(", ")));
 
-    QString dateLoc, gainRaw, setTempRaw, filterRaw, objectRaw, ambTempRaw;
+    QString dateLoc, gainRaw, setTempRaw, filterRaw, objectRaw,
+            ambTempRaw, xBinningRaw;
 
     QXmlStreamReader xml(xmlData);
     while (!xml.atEnd() && !xml.hasError()) {
@@ -74,42 +75,47 @@ std::optional<XisfFrameData> XisfHeaderReader::read(const QString &path)
             const QString value = xml.attributes().value(
                 QLatin1String("value")).toString().trimmed();
 
-            if      (name == kDateLoc && dateLoc.isEmpty())
+            if      (name == kDateLoc  && dateLoc.isEmpty())
                 dateLoc = value;
-            else if (name == kGain    && gainRaw.isEmpty())
+            else if (name == kGain     && gainRaw.isEmpty())
                 gainRaw = value;
-            else if (name == kSetTemp && setTempRaw.isEmpty())
+            else if (name == kSetTemp  && setTempRaw.isEmpty())
                 setTempRaw = value;
-            else if (name == kFilter  && filterRaw.isEmpty())
+            else if (name == kFilter   && filterRaw.isEmpty())
                 filterRaw = value;
-            else if (name == kObject  && objectRaw.isEmpty())
+            else if (name == kObject   && objectRaw.isEmpty())
                 objectRaw = value;
-            else if (name == kAmbTemp && ambTempRaw.isEmpty())
+            else if (name == kAmbTemp  && ambTempRaw.isEmpty())
                 ambTempRaw = value;
+            else if (name == kXBinning && xBinningRaw.isEmpty())
+                xBinningRaw = value;
 
-            if (!dateLoc.isEmpty() && !gainRaw.isEmpty() && !setTempRaw.isEmpty()
-                && !filterRaw.isEmpty() && !objectRaw.isEmpty()
-                && !ambTempRaw.isEmpty())
+            if (!dateLoc.isEmpty()   && !gainRaw.isEmpty()   &&
+                !setTempRaw.isEmpty()&& !filterRaw.isEmpty() &&
+                !objectRaw.isEmpty() && !ambTempRaw.isEmpty()&&
+                !xBinningRaw.isEmpty())
                 break;
         }
     }
 
-    // Log what was found / not found for each keyword.
     if (logging) {
         auto report = [&](const QString &kw, const QString &raw) {
             if (raw.isEmpty())
-                dbg.logPattern(kw, QStringLiteral("FITSKeyword name=\"%1\"").arg(kw),
-                               false);
+                dbg.logPattern(kw,
+                    QStringLiteral("FITSKeyword name=\"%1\"").arg(kw),
+                    false);
             else
-                dbg.logPattern(kw, QStringLiteral("FITSKeyword name=\"%1\"").arg(kw),
-                               true, raw.left(80));
+                dbg.logPattern(kw,
+                    QStringLiteral("FITSKeyword name=\"%1\"").arg(kw),
+                    true, raw.left(80));
         };
-        report(kDateLoc, dateLoc);
-        report(kGain,    gainRaw);
-        report(kSetTemp, setTempRaw);
-        report(kFilter,  filterRaw);
-        report(kObject,  objectRaw);
-        report(kAmbTemp, ambTempRaw);
+        report(kDateLoc,  dateLoc);
+        report(kGain,     gainRaw);
+        report(kSetTemp,  setTempRaw);
+        report(kFilter,   filterRaw);
+        report(kObject,   objectRaw);
+        report(kAmbTemp,  ambTempRaw);
+        report(kXBinning, xBinningRaw);
     }
 
     if (dateLoc.isEmpty()) {
@@ -122,6 +128,7 @@ std::optional<XisfFrameData> XisfHeaderReader::read(const QString &path)
 
     XisfFrameData result;
 
+    // ── DATE-LOC → observing night date ──────────────────────────────────
     QString ds = dateLoc;
     if (ds.startsWith('\'')) ds = ds.mid(1);
     if (ds.endsWith('\''))   ds.chop(1);
@@ -133,47 +140,17 @@ std::optional<XisfFrameData> XisfHeaderReader::read(const QString &path)
         dt = dt.addSecs(-12 * 3600);
         result.date = dt.date();
         if (logging)
-            dbg.logResult(QStringLiteral("XISF '%1' date")
-                              .arg(QFileInfo(path).fileName()),
-                          result.date.toString(Qt::ISODate));
+            dbg.logResult(
+                QStringLiteral("XISF '%1' date").arg(QFileInfo(path).fileName()),
+                result.date.toString(Qt::ISODate));
     } else {
         if (logging)
             dbg.logWarning(
-                QStringLiteral("XISF '%1': could not parse DATE-LOC value '%2'")
+                QStringLiteral("XISF '%1': could not parse DATE-LOC '%2'")
                     .arg(QFileInfo(path).fileName(), ds));
     }
 
-    if (!gainRaw.isEmpty()) {
-        QString gs = gainRaw;
-        if (gs.startsWith('\'')) gs = gs.mid(1);
-        if (gs.endsWith('\''))   gs.chop(1);
-        bool ok = false;
-        double v = gs.trimmed().toDouble(&ok);
-        if (ok) {
-            result.gain = static_cast<int>(std::round(v));
-            if (logging)
-                dbg.logResult(QStringLiteral("XISF '%1' gain")
-                                  .arg(QFileInfo(path).fileName()),
-                              QString::number(result.gain));
-        }
-    }
-
-    if (!setTempRaw.isEmpty()) {
-        QString s = setTempRaw;
-        if (s.startsWith('\'')) s = s.mid(1);
-        if (s.endsWith('\''))   s.chop(1);
-        bool ok = false;
-        double v = s.trimmed().toDouble(&ok);
-        if (ok) {
-            result.sensorTemp    = static_cast<int>(std::round(v));
-            result.hasSensorTemp = true;
-            if (logging)
-                dbg.logResult(QStringLiteral("XISF '%1' SET-TEMP")
-                                  .arg(QFileInfo(path).fileName()),
-                              QString::number(result.sensorTemp));
-        }
-    }
-
+    // ── Helper: strip surrounding single-quotes ───────────────────────────
     auto stripQuotes = [](const QString &s) -> QString {
         QString t = s.trimmed();
         if (t.startsWith('\'')) t = t.mid(1);
@@ -181,33 +158,81 @@ std::optional<XisfFrameData> XisfHeaderReader::read(const QString &path)
         return t.trimmed();
     };
 
+    // ── GAIN ─────────────────────────────────────────────────────────────
+    if (!gainRaw.isEmpty()) {
+        bool ok = false;
+        double v = stripQuotes(gainRaw).toDouble(&ok);
+        if (ok) {
+            result.gain = static_cast<int>(std::round(v));
+            if (logging)
+                dbg.logResult(
+                    QStringLiteral("XISF '%1' gain")
+                        .arg(QFileInfo(path).fileName()),
+                    QString::number(result.gain));
+        }
+    }
+
+    // ── SET-TEMP ─────────────────────────────────────────────────────────
+    if (!setTempRaw.isEmpty()) {
+        bool ok = false;
+        double v = stripQuotes(setTempRaw).toDouble(&ok);
+        if (ok) {
+            result.sensorTemp    = static_cast<int>(std::round(v));
+            result.hasSensorTemp = true;
+            if (logging)
+                dbg.logResult(
+                    QStringLiteral("XISF '%1' SET-TEMP")
+                        .arg(QFileInfo(path).fileName()),
+                    QString::number(result.sensorTemp));
+        }
+    }
+
+    // ── FILTER ───────────────────────────────────────────────────────────
     if (!filterRaw.isEmpty()) {
         result.filter = stripQuotes(filterRaw);
         if (logging)
-            dbg.logResult(QStringLiteral("XISF '%1' FILTER")
-                              .arg(QFileInfo(path).fileName()),
-                          result.filter);
+            dbg.logResult(
+                QStringLiteral("XISF '%1' FILTER")
+                    .arg(QFileInfo(path).fileName()),
+                result.filter);
     }
 
+    // ── OBJECT ───────────────────────────────────────────────────────────
     if (!objectRaw.isEmpty()) {
         result.object = stripQuotes(objectRaw);
         if (logging)
-            dbg.logResult(QStringLiteral("XISF '%1' OBJECT")
-                              .arg(QFileInfo(path).fileName()),
-                          result.object);
+            dbg.logResult(
+                QStringLiteral("XISF '%1' OBJECT")
+                    .arg(QFileInfo(path).fileName()),
+                result.object);
     }
 
+    // ── AMBTEMP ──────────────────────────────────────────────────────────
     if (!ambTempRaw.isEmpty()) {
-        QString s = stripQuotes(ambTempRaw);
         bool ok = false;
-        double v = s.toDouble(&ok);
+        double v = stripQuotes(ambTempRaw).toDouble(&ok);
         if (ok) {
             result.ambTemp    = v;
             result.hasAmbTemp = true;
             if (logging)
-                dbg.logResult(QStringLiteral("XISF '%1' AMBTEMP")
-                                  .arg(QFileInfo(path).fileName()),
-                              QString::number(result.ambTemp, 'f', 2));
+                dbg.logResult(
+                    QStringLiteral("XISF '%1' AMBTEMP")
+                        .arg(QFileInfo(path).fileName()),
+                    QString::number(result.ambTemp, 'f', 2));
+        }
+    }
+
+    // ── XBINNING ─────────────────────────────────────────────────────────
+    if (!xBinningRaw.isEmpty()) {
+        bool ok = false;
+        int v = stripQuotes(xBinningRaw).toInt(&ok);
+        if (ok && v > 0) {
+            result.binning = v;
+            if (logging)
+                dbg.logResult(
+                    QStringLiteral("XISF '%1' XBINNING")
+                        .arg(QFileInfo(path).fileName()),
+                    QString::number(result.binning));
         }
     }
 

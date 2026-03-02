@@ -1,16 +1,29 @@
 #pragma once
-#include "logparserbase.h"
+#include "models/integrationgroup.h"
+#include <QString>
+#include <QList>
 
-class PixInsightLogParser : public ILogParser {
+class PixInsightLogParser {
 public:
-    QList<AcquisitionGroup> parse(const QString &filePath) override;
-    QString errorString() const override { return m_error; }
-    bool canParse(const QString &filePath) const override;
+    // Returns one IntegrationGroup per non-LN-Reference Light integration
+    // block found in the log file.
+    QList<IntegrationGroup> parse(const QString &filePath);
+
+    QString errorString() const { return m_error; }
+    bool    canParse(const QString &filePath) const;
 
 private:
     QString m_error;
-    bool parseBlock(const QStringList &lines, AcquisitionGroup &grp, int blockIdx = 0);
-    QStringList extractXisfPaths(const QStringList &lines, int startLine,
-                                 bool isFastInteg);
+
+    // Parses a single integration block and populates the group's frame list.
+    // Returns false if no .xisf paths were found.
+    bool parseBlock(const QStringList &lines,
+                    IntegrationGroup  &grp,
+                    int                blockIdx);
+
+    static QStringList extractXisfPaths(const QStringList &lines,
+                                        int startLine,
+                                        bool isFastInteg);
+
     static QString extractTarget(const QString &line);
 };

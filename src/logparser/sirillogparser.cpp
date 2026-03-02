@@ -9,7 +9,7 @@ bool SirilLogParser::canParse(const QString &filePath) const
     return QTextStream(&f).readLine().contains("Siril", Qt::CaseInsensitive);
 }
 
-QList<AcquisitionGroup> SirilLogParser::parse(const QString &filePath)
+QList<IntegrationGroup> SirilLogParser::parse(const QString &filePath)
 {
     Q_UNUSED(filePath)
     m_error = QStringLiteral(
